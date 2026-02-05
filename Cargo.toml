@@ -1,0 +1,15 @@
+[package]
+name = "zfs-cloud-backup"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+age = "0.11"
+anyhow = "1"
+chrono = "0.4"
+clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
+os_pipe = "1"
+humantime = "2"
+rust-s3 = "0.37"
+tokio = { version = "1", features = ["full"] }
