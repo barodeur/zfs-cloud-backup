@@ -2,6 +2,7 @@
 name = "zfs-cloud-backup"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 age = "0.11"
