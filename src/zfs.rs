@@ -57,15 +57,16 @@ pub async fn list_snapshots(dataset: &str) -> Result<Vec<SnapshotInfo>> {
 }
 
 /// Spawn `zfs send` for a full snapshot. Returns the child process with stdout piped.
+/// When `replication` is true, passes `-R` to include child datasets and properties.
 pub fn spawn_zfs_send_full(
     dataset: &str,
     snapshot: &str,
-    recursive: bool,
+    replication: bool,
 ) -> Result<tokio::process::Child> {
     let snap_ref = format!("{}@{}", dataset, snapshot);
     let mut cmd = std::process::Command::new("zfs");
     cmd.arg("send");
-    if recursive {
+    if replication {
         cmd.arg("-R");
     }
     cmd.arg(&snap_ref);
@@ -79,27 +80,30 @@ pub fn spawn_zfs_send_full(
     Ok(child)
 }
 
-/// Spawn `zfs send -i` for an incremental snapshot. Returns the child process with stdout piped.
+/// Spawn `zfs send` for an incremental snapshot. Returns the child process with stdout piped.
+/// When `replication` is true, passes `-R -I` to include child datasets and all
+/// intermediate snapshots. Otherwise uses `-i` for a single delta.
 pub fn spawn_zfs_send_incremental(
     dataset: &str,
     base_snapshot: &str,
     target_snapshot: &str,
-    recursive: bool,
+    replication: bool,
 ) -> Result<tokio::process::Child> {
     let base_ref = format!("{}@{}", dataset, base_snapshot);
     let target_ref = format!("{}@{}", dataset, target_snapshot);
     let mut cmd = std::process::Command::new("zfs");
     cmd.arg("send");
-    if recursive {
-        cmd.arg("-R");
+    if replication {
+        cmd.args(["-R", "-I", &base_ref, &target_ref]);
+    } else {
+        cmd.args(["-i", &base_ref, &target_ref]);
     }
-    cmd.args(["-i", &base_ref, &target_ref]);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
     let child = tokio::process::Command::from(cmd)
         .spawn()
-        .with_context(|| format!("failed to spawn zfs send -i {} {}", base_ref, target_ref))?;
+        .with_context(|| format!("failed to spawn zfs send incremental {} {}", base_ref, target_ref))?;
 
     Ok(child)
 }

@@ -46,9 +46,9 @@ enum Commands {
         #[arg(long, env = "ZCB_FULL_INTERVAL", default_value = "7d")]
         full_interval: String,
 
-        /// Use recursive ZFS send (-R flag)
+        /// Replication mode: send child datasets and all intermediate snapshots (-R -I)
         #[arg(long)]
-        recursive: bool,
+        replication: bool,
     },
 
     /// List backups stored in S3
@@ -133,7 +133,7 @@ async fn main() -> Result<()> {
             prefix,
             age_recipient,
             full_interval,
-            recursive,
+            replication,
         } => {
             cmd_send(
                 &dataset,
@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
                 },
                 &age_recipient,
                 &full_interval,
-                recursive,
+                replication,
             )
             .await
         }
@@ -219,7 +219,7 @@ async fn cmd_send(
     s3cfg: &S3Config,
     age_recipient: &str,
     full_interval: &str,
-    recursive: bool,
+    replication: bool,
 ) -> Result<()> {
     let interval = humantime::parse_duration(full_interval)
         .context("invalid --full-interval format (try e.g. '7d' or '24h')")?;
@@ -249,7 +249,7 @@ async fn cmd_send(
             eprintln!("plan: full send of {}@{}", dataset, snapshot);
             let key = format!("{}/full/{}.zfs.age", ds_prefix, snapshot);
 
-            let child = zfs::spawn_zfs_send_full(dataset, snapshot, recursive)?;
+            let child = zfs::spawn_zfs_send_full(dataset, snapshot, replication)?;
             let stdout = child.stdout.context("no stdout from zfs send")?;
             let reader = stdout.into_owned_fd().context("cannot get owned fd")?;
             let reader = std::fs::File::from(reader);
@@ -277,7 +277,7 @@ async fn cmd_send(
                 dataset,
                 base_snapshot,
                 target_snapshot,
-                recursive,
+                replication,
             )?;
             let stdout = child.stdout.context("no stdout from zfs send")?;
             let reader = stdout.into_owned_fd().context("cannot get owned fd")?;
