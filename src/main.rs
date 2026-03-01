@@ -14,7 +14,7 @@ use crate::s3::S3Config;
 use crate::types::SendPlan;
 
 #[derive(Parser)]
-#[command(name = "zfs-cloud-backup", about = "Encrypted ZFS snapshots to S3")]
+#[command(name = "zfs-cloud-backup", version = env!("GIT_VERSION"), about = "Encrypted ZFS snapshots to S3")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
