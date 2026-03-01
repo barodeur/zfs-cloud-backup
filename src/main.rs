@@ -49,6 +49,10 @@ enum Commands {
         /// Replication mode: send child datasets and all intermediate snapshots (-R -I)
         #[arg(long)]
         replication: bool,
+
+        /// Raw mode: send encrypted datasets without decrypting (-w)
+        #[arg(long, env = "ZCB_RAW")]
+        raw: bool,
     },
 
     /// List backups stored in S3
@@ -134,6 +138,7 @@ async fn main() -> Result<()> {
             age_recipient,
             full_interval,
             replication,
+            raw,
         } => {
             cmd_send(
                 &dataset,
@@ -146,6 +151,7 @@ async fn main() -> Result<()> {
                 &age_recipient,
                 &full_interval,
                 replication,
+                raw,
             )
             .await
         }
@@ -220,6 +226,7 @@ async fn cmd_send(
     age_recipient: &str,
     full_interval: &str,
     replication: bool,
+    raw: bool,
 ) -> Result<()> {
     let interval = humantime::parse_duration(full_interval)
         .context("invalid --full-interval format (try e.g. '7d' or '24h')")?;
@@ -249,8 +256,8 @@ async fn cmd_send(
             eprintln!("plan: full send of {}@{}", dataset, snapshot);
             let key = format!("{}/full/{}.zfs.age", ds_prefix, snapshot);
 
-            let child = zfs::spawn_zfs_send_full(dataset, snapshot, replication)?;
-            let stdout = child.stdout.context("no stdout from zfs send")?;
+            let mut child = zfs::spawn_zfs_send_full(dataset, snapshot, replication, raw)?;
+            let stdout = child.stdout.take().context("no stdout from zfs send")?;
             let reader = stdout.into_owned_fd().context("cannot get owned fd")?;
             let reader = std::fs::File::from(reader);
 
@@ -258,6 +265,14 @@ async fn cmd_send(
 
             eprintln!("uploading to s3://{}...", key);
             s3::multipart_upload(&bucket, &key, encrypted).await?;
+
+            let output = child.wait_with_output().await.context("failed to wait for zfs send")?;
+            if !output.status.success() {
+                let _ = s3::delete_object(&bucket, &key).await;
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("zfs send failed: {}", stderr.trim());
+            }
+
             eprintln!("done: full backup uploaded to {}", key);
         }
         SendPlan::Incremental {
@@ -273,13 +288,14 @@ async fn cmd_send(
                 ds_prefix, base_snapshot, target_snapshot
             );
 
-            let child = zfs::spawn_zfs_send_incremental(
+            let mut child = zfs::spawn_zfs_send_incremental(
                 dataset,
                 base_snapshot,
                 target_snapshot,
                 replication,
+                raw,
             )?;
-            let stdout = child.stdout.context("no stdout from zfs send")?;
+            let stdout = child.stdout.take().context("no stdout from zfs send")?;
             let reader = stdout.into_owned_fd().context("cannot get owned fd")?;
             let reader = std::fs::File::from(reader);
 
@@ -287,6 +303,14 @@ async fn cmd_send(
 
             eprintln!("uploading to s3://{}...", key);
             s3::multipart_upload(&bucket, &key, encrypted).await?;
+
+            let output = child.wait_with_output().await.context("failed to wait for zfs send")?;
+            if !output.status.success() {
+                let _ = s3::delete_object(&bucket, &key).await;
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("zfs send failed: {}", stderr.trim());
+            }
+
             eprintln!("done: incremental backup uploaded to {}", key);
         }
     }
