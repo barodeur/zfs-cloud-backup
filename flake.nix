@@ -7,6 +7,15 @@
     let
       forAllSystems = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
       linuxSystems = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ];
+
+      buildZcb = pkgs: pkgs.pkgsStatic.rustPlatform.buildRustPackage {
+        pname = "zfs-cloud-backup";
+        version = "0.1.0";
+        src = ./.;
+        cargoLock.lockFile = ./Cargo.lock;
+        nativeBuildInputs = [ pkgs.pkg-config ];
+        buildInputs = [ pkgs.pkgsStatic.openssl ];
+      };
     in
     {
       packages = linuxSystems (system:
@@ -14,14 +23,9 @@
           pkgs = nixpkgs.legacyPackages.${system};
         in
         {
-          default = pkgs.pkgsStatic.rustPlatform.buildRustPackage {
-            pname = "zfs-cloud-backup";
-            version = "0.1.0";
-            src = ./.;
-            cargoLock.lockFile = ./Cargo.lock;
-            nativeBuildInputs = [ pkgs.pkg-config ];
-            buildInputs = [ pkgs.pkgsStatic.openssl ];
-          };
+          default = buildZcb pkgs;
+        } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          aarch64 = buildZcb pkgs.pkgsCross.aarch64-multiplatform;
         });
 
       devShells = forAllSystems (system:

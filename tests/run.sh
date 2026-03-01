@@ -5,6 +5,12 @@ LIMA_VM="zcb-test"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
+# Build the binary via Nix and stage it for Docker
+echo "Building binary via nix..."
+nix build --out-link "$PROJECT_DIR/result"
+mkdir -p "$PROJECT_DIR/bin"
+cp "$PROJECT_DIR/result/bin/zfs-cloud-backup" "$PROJECT_DIR/bin/"
+
 # Create Lima VM if it doesn't exist
 if ! limactl list --format '{{.Name}}' 2>/dev/null | grep -q "^${LIMA_VM}$"; then
   echo "Creating Lima VM '${LIMA_VM}'..."

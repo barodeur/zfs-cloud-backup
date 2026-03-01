@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build x86_64
+        run: nix build .#default
+
+      - name: Upload x86_64 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: zfs-cloud-backup-x86_64
+          path: result/bin/zfs-cloud-backup
+
+      - name: Build aarch64 (cross-compiled)
+        run: nix build .#aarch64
+
+      - name: Upload aarch64 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: zfs-cloud-backup-aarch64
+          path: result/bin/zfs-cloud-backup
+
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Run unit tests
+        run: nix develop -c cargo test
+
+  integration-test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: zfs-cloud-backup-x86_64
+          path: bin
+
+      - name: Make binary executable
+        run: chmod +x bin/zfs-cloud-backup
+
+      - name: Run integration tests
+        run: docker compose -f tests/docker-compose.yml up --build --abort-on-container-exit --exit-code-from test
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, unit-test, integration-test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: zfs-cloud-backup-x86_64
+          path: x86_64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: zfs-cloud-backup-aarch64
+          path: aarch64
+
+      - name: Package release tarballs
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          for arch in x86_64 aarch64; do
+            target="${arch}-unknown-linux-musl"
+            name="zfs-cloud-backup-${tag}-${target}"
+            mkdir "$name"
+            cp "${arch}/zfs-cloud-backup" "$name/"
+            cp README.md LICENSE "$name/"
+            chmod +x "$name/zfs-cloud-backup"
+            tar czf "$name.tar.gz" "$name"
+          done
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            *.tar.gz
