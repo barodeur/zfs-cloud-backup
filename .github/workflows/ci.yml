@@ -58,5 +58,5 @@ jobs:
           ZCB_BUCKET: test-backups
           ZCB_REGION: us-east-1
         run: |
-          export PATH="$PWD/target/release:$PATH"
+          sudo install target/release/zfs-cloud-backup /usr/local/bin/
           sudo -E tests/integration-test.sh
