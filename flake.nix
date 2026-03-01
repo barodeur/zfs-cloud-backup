@@ -24,8 +24,6 @@
         in
         {
           default = buildZcb pkgs;
-        } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
-          aarch64 = buildZcb pkgs.pkgsCross.aarch64-multiplatform;
         });
 
       devShells = forAllSystems (system:

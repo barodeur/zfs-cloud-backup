@@ -11,27 +11,27 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Build x86_64
-        run: nix build .#default
+      - name: Build
+        run: nix build
 
-      - name: Upload x86_64 binary
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: zfs-cloud-backup-x86_64
-          path: result/bin/zfs-cloud-backup
-
-      - name: Build aarch64 (cross-compiled)
-        run: nix build .#aarch64
-
-      - name: Upload aarch64 binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: zfs-cloud-backup-aarch64
+          name: zfs-cloud-backup-${{ matrix.arch }}
           path: result/bin/zfs-cloud-backup
 
   unit-test:
