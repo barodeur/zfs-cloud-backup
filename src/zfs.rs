@@ -56,6 +56,30 @@ pub async fn list_snapshots(dataset: &str) -> Result<Vec<SnapshotInfo>> {
     Ok(snapshots)
 }
 
+/// List all descendant datasets under `dataset` (excluding the dataset itself).
+pub async fn list_descendants(dataset: &str) -> Result<Vec<String>> {
+    let output = Command::new("zfs")
+        .args(["list", "-r", "-H", "-o", "name"])
+        .arg(dataset)
+        .output()
+        .await
+        .context("failed to run zfs list")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("zfs list failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("invalid utf-8 from zfs list")?;
+    let descendants: Vec<String> = stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|name| !name.is_empty() && name != dataset)
+        .collect();
+
+    Ok(descendants)
+}
+
 /// Spawn `zfs send` for a full snapshot. Returns the child process with stdout piped.
 /// When `replication` is true, passes `-R` to include child datasets and properties.
 pub fn spawn_zfs_send_full(

@@ -241,6 +241,49 @@ pub fn plan_prune(entries: &[BackupEntry], keep_full: usize) -> Vec<BackupEntry>
     to_remove
 }
 
+/// Extract the dataset portion from an S3 object key.
+/// Keys look like `{prefix}/{dataset}/full/...` or `{prefix}/{dataset}/incr/...`.
+pub fn extract_dataset_from_key(key: &str, prefix: &str) -> Option<String> {
+    let rest = if prefix.is_empty() {
+        key
+    } else {
+        key.strip_prefix(&format!("{}/", prefix.trim_end_matches('/')))?
+    };
+
+    if let Some(idx) = rest.find("/full/") {
+        Some(rest[..idx].to_string())
+    } else {
+        rest.find("/incr/").map(|idx| rest[..idx].to_string())
+    }
+}
+
+/// Scan S3 objects to discover all distinct dataset paths that start with `root_dataset`.
+/// Returns them sorted, with the root dataset first (if present).
+pub fn discover_datasets_in_objects(
+    objects: &[Object],
+    prefix: &str,
+    root_dataset: &str,
+) -> Vec<String> {
+    let mut datasets = std::collections::BTreeSet::new();
+    let root_prefix = format!("{}/", root_dataset);
+
+    for obj in objects {
+        if let Some(ds) = extract_dataset_from_key(&obj.key, prefix) {
+            if ds == root_dataset || ds.starts_with(&root_prefix) {
+                datasets.insert(ds);
+            }
+        }
+    }
+
+    // Return with root first, then children sorted
+    let mut result: Vec<String> = Vec::with_capacity(datasets.len());
+    if datasets.remove(root_dataset) {
+        result.push(root_dataset.to_string());
+    }
+    result.extend(datasets);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +433,79 @@ mod tests {
         let entry = parse_backup_entry(&obj, "backup", "pool/data").unwrap();
         assert_eq!(entry.snapshot, "snap1");
         assert_eq!(entry.backup_type, BackupType::Full);
+    }
+
+    #[test]
+    fn test_extract_dataset_from_key() {
+        assert_eq!(
+            extract_dataset_from_key("backup/pool/data/full/snap1.zfs.age", "backup"),
+            Some("pool/data".to_string())
+        );
+        assert_eq!(
+            extract_dataset_from_key("backup/pool/data/child/incr/s1..s2.zfs.age", "backup"),
+            Some("pool/data/child".to_string())
+        );
+        assert_eq!(
+            extract_dataset_from_key("pool/data/full/snap1.zfs.age", ""),
+            Some("pool/data".to_string())
+        );
+        assert_eq!(extract_dataset_from_key("junk", "backup"), None);
+    }
+
+    #[test]
+    fn test_discover_datasets_in_objects() {
+        let objects = vec![
+            Object {
+                key: "backup/pool/vms/full/snap1.zfs.age".to_string(),
+                last_modified: "2026-02-01T00:00:00Z".to_string(),
+                size: 100,
+                e_tag: None,
+                storage_class: None,
+                owner: None,
+            },
+            Object {
+                key: "backup/pool/vms/vm1/full/snap1.zfs.age".to_string(),
+                last_modified: "2026-02-01T00:00:00Z".to_string(),
+                size: 100,
+                e_tag: None,
+                storage_class: None,
+                owner: None,
+            },
+            Object {
+                key: "backup/pool/vms/vm2/incr/s1..s2.zfs.age".to_string(),
+                last_modified: "2026-02-01T00:00:00Z".to_string(),
+                size: 100,
+                e_tag: None,
+                storage_class: None,
+                owner: None,
+            },
+            Object {
+                key: "backup/pool/other/full/snap1.zfs.age".to_string(),
+                last_modified: "2026-02-01T00:00:00Z".to_string(),
+                size: 100,
+                e_tag: None,
+                storage_class: None,
+                owner: None,
+            },
+        ];
+
+        let datasets = discover_datasets_in_objects(&objects, "backup", "pool/vms");
+        assert_eq!(datasets, vec!["pool/vms", "pool/vms/vm1", "pool/vms/vm2"]);
+    }
+
+    #[test]
+    fn test_discover_datasets_single() {
+        let objects = vec![Object {
+            key: "backup/pool/data/full/snap1.zfs.age".to_string(),
+            last_modified: "2026-02-01T00:00:00Z".to_string(),
+            size: 100,
+            e_tag: None,
+            storage_class: None,
+            owner: None,
+        }];
+
+        let datasets = discover_datasets_in_objects(&objects, "backup", "pool/data");
+        assert_eq!(datasets, vec!["pool/data"]);
     }
 
     #[test]
