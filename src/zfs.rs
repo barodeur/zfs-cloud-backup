@@ -82,16 +82,21 @@ pub async fn list_descendants(dataset: &str) -> Result<Vec<String>> {
 
 /// Spawn `zfs send` for a full snapshot. Returns the child process with stdout piped.
 /// When `replication` is true, passes `-R` to include child datasets and properties.
+/// When `raw` is true, passes `-w` to send raw encrypted data without decrypting.
 pub fn spawn_zfs_send_full(
     dataset: &str,
     snapshot: &str,
     replication: bool,
+    raw: bool,
 ) -> Result<tokio::process::Child> {
     let snap_ref = format!("{}@{}", dataset, snapshot);
     let mut cmd = std::process::Command::new("zfs");
     cmd.arg("send");
     if replication {
         cmd.arg("-R");
+    }
+    if raw {
+        cmd.arg("-w");
     }
     cmd.arg(&snap_ref);
     cmd.stdout(Stdio::piped());
@@ -107,18 +112,26 @@ pub fn spawn_zfs_send_full(
 /// Spawn `zfs send` for an incremental snapshot. Returns the child process with stdout piped.
 /// When `replication` is true, passes `-R -I` to include child datasets and all
 /// intermediate snapshots. Otherwise uses `-i` for a single delta.
+/// When `raw` is true, passes `-w` to send raw encrypted data without decrypting.
 pub fn spawn_zfs_send_incremental(
     dataset: &str,
     base_snapshot: &str,
     target_snapshot: &str,
     replication: bool,
+    raw: bool,
 ) -> Result<tokio::process::Child> {
     let base_ref = format!("{}@{}", dataset, base_snapshot);
     let target_ref = format!("{}@{}", dataset, target_snapshot);
     let mut cmd = std::process::Command::new("zfs");
     cmd.arg("send");
     if replication {
-        cmd.args(["-R", "-I", &base_ref, &target_ref]);
+        cmd.arg("-R");
+    }
+    if raw {
+        cmd.arg("-w");
+    }
+    if replication {
+        cmd.args(["-I", &base_ref, &target_ref]);
     } else {
         cmd.args(["-i", &base_ref, &target_ref]);
     }

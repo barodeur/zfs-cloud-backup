@@ -432,3 +432,96 @@ $ZCB prune \
 LIST_OUT=$($ZCB list --dataset testpool/indiv)
 FULL_COUNT=$(echo "$LIST_OUT" | grep -c "^full" || true)
 assert_count "individual prune: 3 fulls remain (1 per dataset)" 3 "$FULL_COUNT"
+
+# =============================================================================
+# Test 7: Encrypted dataset with --raw (zvol children)
+# =============================================================================
+echo ""
+echo -e "${BOLD}=== Test 7: Encrypted dataset with --raw (zvol children) ===${RESET}"
+
+# Create an encrypted parent dataset with two zvol children
+echo "testpassword" | zfs create \
+  -o encryption=aes-256-gcm \
+  -o keyformat=passphrase \
+  testpool/encrypted
+zfs create -V 10M testpool/encrypted/vol1
+zfs create -V 10M testpool/encrypted/vol2
+udevadm settle 2>/dev/null || sleep 2
+
+# Write data to the parent filesystem
+echo "secret data" > /testpool/encrypted/secret.txt
+dd if=/dev/urandom of=/testpool/encrypted/random.bin bs=1K count=64 2>/dev/null
+
+# Format, mount, and write data to both zvols
+mkfs.ext4 -q /dev/zvol/testpool/encrypted/vol1
+mkfs.ext4 -q /dev/zvol/testpool/encrypted/vol2
+mkdir -p /mnt/enc_vol1 /mnt/enc_vol2
+mount /dev/zvol/testpool/encrypted/vol1 /mnt/enc_vol1
+mount /dev/zvol/testpool/encrypted/vol2 /mnt/enc_vol2
+echo "enc vol1 data" > /mnt/enc_vol1/data.txt
+echo "enc vol2 data" > /mnt/enc_vol2/data.txt
+sync
+umount /mnt/enc_vol1 /mnt/enc_vol2
+
+zfs snapshot -r testpool/encrypted@esnap1
+
+# Sending with --replication but WITHOUT --raw should fail on encrypted datasets.
+# Before the fix, zfs send would error to stderr but the tool would silently
+# upload an empty stream and exit 0.
+if $ZCB send \
+  --dataset testpool/encrypted \
+  --age-recipient "$AGE_RECIPIENT" \
+  --replication 2>/dev/null; then
+  fail "send -R without --raw should fail on encrypted dataset"
+else
+  pass "send -R without --raw fails on encrypted dataset"
+fi
+
+# Verify no backup was left in S3 from the failed send
+FAILED_LIST=$($ZCB list --dataset testpool/encrypted 2>/dev/null || true)
+FAILED_COUNT=$(echo "$FAILED_LIST" | grep -c "^full" || true)
+assert_count "no backup left after failed send" 0 "$FAILED_COUNT"
+
+# Sending with --replication --raw should succeed
+$ZCB send \
+  --dataset testpool/encrypted \
+  --age-recipient "$AGE_RECIPIENT" \
+  --replication \
+  --raw
+
+LIST_OUT=$($ZCB list --dataset testpool/encrypted)
+assert_contains "raw send: list shows esnap1" "$LIST_OUT" "esnap1"
+assert_contains "raw send: list shows full" "$LIST_OUT" "full"
+
+# Restore the raw backup and verify data integrity
+$ZCB restore \
+  --dataset testpool/enc_restored \
+  --snapshot esnap1 \
+  --age-identity "$AGE_KEY_FILE"
+udevadm settle 2>/dev/null || sleep 2
+
+# Raw-received encrypted datasets need their key loaded before mounting
+echo "testpassword" | zfs load-key -r testpool/enc_restored
+zfs mount testpool/enc_restored
+
+# Verify parent filesystem
+assert_file_eq "encrypted: secret.txt matches" /testpool/encrypted/secret.txt /testpool/enc_restored/secret.txt
+assert_file_eq "encrypted: random.bin matches" /testpool/encrypted/random.bin /testpool/enc_restored/random.bin
+
+# Verify zvol children exist and are volumes
+ENC_VOL1_TYPE=$(zfs get -H -o value type testpool/enc_restored/vol1 2>/dev/null || echo "")
+ENC_VOL2_TYPE=$(zfs get -H -o value type testpool/enc_restored/vol2 2>/dev/null || echo "")
+assert_eq "encrypted vol1 is a volume" "volume" "$ENC_VOL1_TYPE"
+assert_eq "encrypted vol2 is a volume" "volume" "$ENC_VOL2_TYPE"
+
+# Mount restored zvols and verify data
+mkdir -p /mnt/enc_vol1_r /mnt/enc_vol2_r
+mount /dev/zvol/testpool/enc_restored/vol1 /mnt/enc_vol1_r
+mount /dev/zvol/testpool/enc_restored/vol2 /mnt/enc_vol2_r
+
+ENC_VOL1_RESTORED=$(cat /mnt/enc_vol1_r/data.txt)
+ENC_VOL2_RESTORED=$(cat /mnt/enc_vol2_r/data.txt)
+assert_eq "encrypted vol1 data matches" "enc vol1 data" "$ENC_VOL1_RESTORED"
+assert_eq "encrypted vol2 data matches" "enc vol2 data" "$ENC_VOL2_RESTORED"
+
+umount /mnt/enc_vol1_r /mnt/enc_vol2_r
