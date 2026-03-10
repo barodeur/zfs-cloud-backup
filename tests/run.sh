@@ -2,6 +2,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Build the binary via Nix and stage it for Docker (skip if pre-built binary exists)
+if [ -x "$PROJECT_DIR/bin/zfs-cloud-backup" ]; then
+  echo "Using existing binary at bin/zfs-cloud-backup"
+else
+  echo "Building binary via nix..."
+  nix build --out-link "$PROJECT_DIR/result"
+  mkdir -p "$PROJECT_DIR/bin"
+  cp "$PROJECT_DIR/result/bin/zfs-cloud-backup" "$PROJECT_DIR/bin/"
+fi
 
 compose() {
   docker compose -f "$SCRIPT_DIR/docker-compose.yml" \

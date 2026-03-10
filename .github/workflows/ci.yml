@@ -2,61 +2,105 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
+    tags: ["v*"]
   pull_request:
 
 jobs:
-  integration:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
 
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build
+        run: nix build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zfs-cloud-backup-${{ matrix.arch }}
+          path: result/bin/zfs-cloud-backup
+
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Run unit tests
+        run: nix develop -c cargo test
+
+  integration-test:
+    needs: build
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - uses: actions/download-artifact@v4
+        with:
+          name: zfs-cloud-backup-x86_64
+          path: bin
+
+      - name: Make binary executable
+        run: chmod +x bin/zfs-cloud-backup
+
+      - name: Load ZFS kernel module
         run: |
           sudo apt-get update
-          sudo apt-get install -y zfsutils-linux age
+          sudo apt-get install -y zfsutils-linux
           sudo modprobe zfs
-          arch=$(dpkg --print-architecture)
-          curl -fsSL "https://dl.min.io/client/mc/release/linux-${arch}/mc" -o /tmp/mc
-          sudo install /tmp/mc /usr/local/bin/mc
-
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-
-      - name: Build
-        run: nix develop --command cargo build --release
-
-      - name: Cache MinIO Docker image
-        uses: actions/cache@v4
-        with:
-          path: /tmp/minio.tar
-          key: minio-${{ hashFiles('tests/docker-compose.yml') }}
-
-      - name: Load or pull MinIO image
-        run: |
-          if [ -f /tmp/minio.tar ]; then
-            docker load -i /tmp/minio.tar
-          else
-            docker pull minio/minio:latest
-            docker save minio/minio:latest -o /tmp/minio.tar
-          fi
-
-      - name: Start MinIO
-        run: |
-          docker run -d -p 9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio server /data
-          until curl -sf http://localhost:9000/minio/health/live; do sleep 1; done
 
       - name: Run integration tests
-        env:
-          AWS_ACCESS_KEY_ID: minioadmin
-          AWS_SECRET_ACCESS_KEY: minioadmin
-          ZCB_ENDPOINT: http://localhost:9000
-          ZCB_BUCKET: test-backups
-          ZCB_REGION: us-east-1
+        run: docker compose -f tests/docker-compose.yml up --build --abort-on-container-exit --exit-code-from test
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, unit-test, integration-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: zfs-cloud-backup-x86_64
+          path: x86_64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: zfs-cloud-backup-aarch64
+          path: aarch64
+
+      - name: Package release tarballs
         run: |
-          sudo install target/release/zfs-cloud-backup /usr/local/bin/
-          sudo -E tests/integration-test.sh
+          tag="${GITHUB_REF#refs/tags/}"
+          for arch in x86_64 aarch64; do
+            target="${arch}-unknown-linux-musl"
+            name="zfs-cloud-backup-${tag}-${target}"
+            mkdir "$name"
+            cp "${arch}/zfs-cloud-backup" "$name/"
+            cp README.md LICENSE "$name/"
+            chmod +x "$name/zfs-cloud-backup"
+            tar czf "$name.tar.gz" "$name"
+          done
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            *.tar.gz

@@ -1,14 +1,6 @@
-# Stage 1: Build the Rust binary
-FROM rust:bookworm AS builder
-
-WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
-COPY src/ src/
-
-RUN cargo build --release
-
-# Stage 2: Runtime with ZFS + age + mc
 FROM ubuntu:24.04
+
+ARG BINARY=bin/zfs-cloud-backup
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -25,7 +17,7 @@ RUN arch=$(dpkg --print-architecture) && \
     curl -fsSL "https://dl.min.io/client/mc/release/linux-${arch}/mc" -o /usr/local/bin/mc && \
     chmod +x /usr/local/bin/mc
 
-COPY --from=builder /build/target/release/zfs-cloud-backup /usr/local/bin/zfs-cloud-backup
+COPY ${BINARY} /usr/local/bin/zfs-cloud-backup
 COPY tests/integration-test.sh /integration-test.sh
 RUN chmod +x /integration-test.sh
 
