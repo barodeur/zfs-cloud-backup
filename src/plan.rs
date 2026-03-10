@@ -243,6 +243,8 @@ pub fn plan_prune(entries: &[BackupEntry], keep_full: usize) -> Vec<BackupEntry>
 
 /// Extract the dataset portion from an S3 object key.
 /// Keys look like `{prefix}/{dataset}/full/...` or `{prefix}/{dataset}/incr/...`.
+/// Uses rfind so that datasets with path components named "full" or "incr"
+/// (e.g. `pool/full/data`) are parsed correctly.
 pub fn extract_dataset_from_key(key: &str, prefix: &str) -> Option<String> {
     let rest = if prefix.is_empty() {
         key
@@ -250,10 +252,10 @@ pub fn extract_dataset_from_key(key: &str, prefix: &str) -> Option<String> {
         key.strip_prefix(&format!("{}/", prefix.trim_end_matches('/')))?
     };
 
-    if let Some(idx) = rest.find("/full/") {
+    if let Some(idx) = rest.rfind("/full/") {
         Some(rest[..idx].to_string())
     } else {
-        rest.find("/incr/").map(|idx| rest[..idx].to_string())
+        rest.rfind("/incr/").map(|idx| rest[..idx].to_string())
     }
 }
 
@@ -450,6 +452,15 @@ mod tests {
             Some("pool/data".to_string())
         );
         assert_eq!(extract_dataset_from_key("junk", "backup"), None);
+        // Edge case: dataset path component named "full" or "incr"
+        assert_eq!(
+            extract_dataset_from_key("backup/pool/full/data/full/snap1.zfs.age", "backup"),
+            Some("pool/full/data".to_string())
+        );
+        assert_eq!(
+            extract_dataset_from_key("backup/pool/incr/data/incr/s1..s2.zfs.age", "backup"),
+            Some("pool/incr/data".to_string())
+        );
     }
 
     #[test]
