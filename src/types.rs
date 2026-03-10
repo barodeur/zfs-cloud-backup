@@ -1,5 +1,16 @@
 use chrono::{DateTime, Utc};
 
+/// Backup mode: how datasets are sent to S3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum BackupMode {
+    /// Send only the named dataset as a single stream
+    Single,
+    /// Send a monolithic `zfs send -R` replication stream (includes children)
+    Replication,
+    /// Send each descendant dataset as its own independent backup chain
+    Individual,
+}
+
 /// A ZFS snapshot as reported by `zfs list -t snapshot`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotInfo {

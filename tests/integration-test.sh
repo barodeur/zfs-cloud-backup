@@ -181,7 +181,7 @@ zfs snapshot -r testpool/repl@replsnap1
 $ZCB send \
   --dataset testpool/repl \
   --age-recipient "$AGE_RECIPIENT" \
-  --replication
+  --mode replication
 
 LIST_OUT=$($ZCB list --dataset testpool/repl)
 assert_contains "list shows replsnap1" "$LIST_OUT" "replsnap1"
@@ -206,7 +206,7 @@ zfs snapshot -r testpool/repl@replsnap2
 $ZCB send \
   --dataset testpool/repl \
   --age-recipient "$AGE_RECIPIENT" \
-  --replication \
+  --mode replication \
   --full-interval 7d
 
 LIST_OUT=$($ZCB list --dataset testpool/repl)
@@ -254,7 +254,7 @@ zfs snapshot -r testpool/zvtest@zsnap1
 $ZCB send \
   --dataset testpool/zvtest \
   --age-recipient "$AGE_RECIPIENT" \
-  --replication
+  --mode replication
 
 # Now modify both zvols (post-backup changes)
 mount /dev/zvol/testpool/zvtest/vol1 /mnt/vol1
@@ -348,10 +348,96 @@ assert_count "1 full backup after prune" 1 "$FULL_COUNT"
 assert_contains "newest backup survives" "$LIST_OUT" "psnap3"
 
 # =============================================================================
-# Test 6: Encrypted dataset with --raw (zvol children)
+# Test 6: Individual mode (per-dataset backups)
 # =============================================================================
 echo ""
-echo -e "${BOLD}=== Test 6: Encrypted dataset with --raw (zvol children) ===${RESET}"
+echo -e "${BOLD}=== Test 6: Individual mode (per-dataset backups) ===${RESET}"
+
+zfs create testpool/indiv
+zfs create testpool/indiv/child1
+zfs create testpool/indiv/child2
+echo "parent data" > /testpool/indiv/parent.txt
+echo "child1 data" > /testpool/indiv/child1/c1.txt
+echo "child2 data" > /testpool/indiv/child2/c2.txt
+zfs snapshot -r testpool/indiv@isnap1
+
+# Send in individual mode
+$ZCB send \
+  --dataset testpool/indiv \
+  --age-recipient "$AGE_RECIPIENT" \
+  --mode individual
+
+# List should show all three datasets
+LIST_OUT=$($ZCB list --dataset testpool/indiv)
+assert_contains "individual list: parent isnap1" "$LIST_OUT" "isnap1"
+assert_contains "individual list: child1 header" "$LIST_OUT" "testpool/indiv/child1"
+assert_contains "individual list: child2 header" "$LIST_OUT" "testpool/indiv/child2"
+FULL_COUNT=$(echo "$LIST_OUT" | grep -c "^full" || true)
+assert_count "individual: 3 full backups (one per dataset)" 3 "$FULL_COUNT"
+
+# Restore only child1 using --target: destroy child1, then restore it
+zfs destroy -r testpool/indiv/child1
+$ZCB restore \
+  --dataset testpool/indiv \
+  --snapshot isnap1 \
+  --age-identity "$AGE_KEY_FILE" \
+  --target child1
+
+CHILD1_EXISTS=$(zfs list -H -o name testpool/indiv/child1 2>/dev/null || echo "")
+assert_eq "target restore: child1 exists" "testpool/indiv/child1" "$CHILD1_EXISTS"
+C1_DATA=$(cat /testpool/indiv/child1/c1.txt)
+assert_eq "target restore: child1 data correct" "child1 data" "$C1_DATA"
+
+# Restore all datasets: destroy tree and restore from individual backups
+zfs destroy -r testpool/indiv
+$ZCB restore \
+  --dataset testpool/indiv \
+  --snapshot isnap1 \
+  --age-identity "$AGE_KEY_FILE"
+
+PARENT_EXISTS=$(zfs list -H -o name testpool/indiv 2>/dev/null || echo "")
+assert_eq "full restore: parent exists" "testpool/indiv" "$PARENT_EXISTS"
+CHILD1_EXISTS=$(zfs list -H -o name testpool/indiv/child1 2>/dev/null || echo "")
+assert_eq "full restore: child1 exists" "testpool/indiv/child1" "$CHILD1_EXISTS"
+CHILD2_EXISTS=$(zfs list -H -o name testpool/indiv/child2 2>/dev/null || echo "")
+assert_eq "full restore: child2 exists" "testpool/indiv/child2" "$CHILD2_EXISTS"
+PARENT_DATA=$(cat /testpool/indiv/parent.txt)
+assert_eq "full restore: parent.txt correct" "parent data" "$PARENT_DATA"
+C1_DATA=$(cat /testpool/indiv/child1/c1.txt)
+assert_eq "full restore: child1 data correct" "child1 data" "$C1_DATA"
+C2_DATA=$(cat /testpool/indiv/child2/c2.txt)
+assert_eq "full restore: child2 data correct" "child2 data" "$C2_DATA"
+
+# Incremental individual mode: mutate, snapshot, send
+echo "parent data v2" > /testpool/indiv/parent.txt
+echo "child1 data v2" > /testpool/indiv/child1/c1.txt
+zfs snapshot -r testpool/indiv@isnap2
+
+$ZCB send \
+  --dataset testpool/indiv \
+  --age-recipient "$AGE_RECIPIENT" \
+  --mode individual \
+  --full-interval 7d
+
+LIST_OUT=$($ZCB list --dataset testpool/indiv)
+assert_contains "individual incr: isnap2 present" "$LIST_OUT" "isnap2"
+INCR_COUNT=$(echo "$LIST_OUT" | grep -c "^incr" || true)
+assert_count "individual incr: 3 incrementals (one per dataset)" 3 "$INCR_COUNT"
+
+# Prune individual mode backups
+$ZCB prune \
+  --dataset testpool/indiv \
+  --keep-full 1
+
+LIST_OUT=$($ZCB list --dataset testpool/indiv)
+FULL_COUNT=$(echo "$LIST_OUT" | grep -c "^full" || true)
+assert_count "individual prune: 3 fulls remain (1 per dataset)" 3 "$FULL_COUNT"
+
+# =============================================================================
+# Test 7: Encrypted dataset with --raw (zvol children)
+# =============================================================================
+echo ""
+echo -e "${BOLD}=== Test 7: Encrypted dataset with --raw (zvol children) ===${RESET}"
 
 # Create an encrypted parent dataset with two zvol children
 echo "testpassword" | zfs create \
