@@ -251,15 +251,13 @@ async fn send_one_dataset(
     eprintln!("listing local snapshots for {}...", dataset);
     let all_snaps = zfs::list_snapshots(dataset).await?;
 
-    // In non-replication mode, filter to only exact dataset matches
-    let local_snaps: Vec<_> = if replication {
-        all_snaps
-    } else {
-        all_snaps
-            .into_iter()
-            .filter(|s| s.dataset == dataset)
-            .collect()
-    };
+    // Always plan against the exact dataset's snapshots — child dataset
+    // snapshots may have different names and would confuse decide_send.
+    // The replication flag only controls zfs send options (-R / -R -I).
+    let local_snaps: Vec<_> = all_snaps
+        .into_iter()
+        .filter(|s| s.dataset == dataset)
+        .collect();
 
     if local_snaps.is_empty() {
         bail!("no snapshots found for dataset {}", dataset);
