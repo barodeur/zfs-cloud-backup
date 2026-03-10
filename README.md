@@ -73,9 +73,9 @@ Restore a single descendant without downloading everything else:
 
 ```bash
 zfs-cloud-backup restore \
-  --dataset tank/recovered \
+  --dataset tank/vms \
   --snapshot daily-2025-01-02 \
-  --target vms/vm001 \
+  --target vm001 \
   --bucket my-backups \
   --endpoint https://s3.amazonaws.com \
   --age-identity /root/backup-key.txt
@@ -85,7 +85,7 @@ Restore all descendants:
 
 ```bash
 zfs-cloud-backup restore \
-  --dataset tank/recovered \
+  --dataset tank/vms \
   --snapshot daily-2025-01-02 \
   --bucket my-backups \
   --endpoint https://s3.amazonaws.com \
@@ -137,7 +137,7 @@ Restores a snapshot by downloading and applying the full backup plus any require
 
 | Flag | Env | Default | Description |
 |------|-----|---------|-------------|
-| `--dataset` | `ZCB_DATASET` | | Target dataset to receive into |
+| `--dataset` | `ZCB_DATASET` | | Dataset to restore (used for S3 lookup and as `zfs receive` target) |
 | `--snapshot` | | | Snapshot name to restore |
 | `--target` | | | Descendant path to restore (relative to `--dataset`), e.g. `vms/vm001`. When omitted, restores all available descendants. |
 | `--age-identity` | `ZCB_AGE_IDENTITY` | | Path to age private key file |
