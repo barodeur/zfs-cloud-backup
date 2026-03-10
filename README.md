@@ -62,11 +62,18 @@ zfs-cloud-backup list \
 ```
 
 ```
-DATASET              TYPE   SNAPSHOT          BASE                SIZE       DATE
-tank/vms             full   daily-2025-01-01  --                  2.1MB     2025-01-01 00:00
-tank/vms/vm001       full   daily-2025-01-01  --                  12.3MB    2025-01-01 00:00
-tank/vms/vm001       incr   daily-2025-01-02  daily-2025-01-01    1.1MB     2025-01-02 00:00
-tank/vms/vm002       full   daily-2025-01-01  --                  8.7MB     2025-01-01 00:00
+tank/vms:
+TYPE   SNAPSHOT                  BASE                      SIZE       DATE
+full   daily-2025-01-01          —                          2.1MB    2025-01-01 00:00
+
+tank/vms/vm001:
+TYPE   SNAPSHOT                  BASE                      SIZE       DATE
+full   daily-2025-01-01          —                         12.3MB    2025-01-01 00:00
+incr   daily-2025-01-02          daily-2025-01-01           1.1MB    2025-01-02 00:00
+
+tank/vms/vm002:
+TYPE   SNAPSHOT                  BASE                      SIZE       DATE
+full   daily-2025-01-01          —                          8.7MB    2025-01-01 00:00
 ```
 
 Restore a single descendant without downloading everything else:
