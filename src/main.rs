@@ -4,9 +4,13 @@ mod s3;
 mod types;
 mod zfs;
 
+use std::sync::{Arc, Mutex};
+
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
+use futures::StreamExt;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ::s3::Bucket;
 use tokio::io::AsyncWriteExt;
 
@@ -57,6 +61,10 @@ enum Commands {
         /// Raw mode: send encrypted datasets without decrypting (-w)
         #[arg(long, env = "ZCB_RAW")]
         raw: bool,
+
+        /// Number of datasets to upload concurrently (individual mode only)
+        #[arg(long, env = "ZCB_PARALLEL", default_value = "1")]
+        parallel: usize,
     },
 
     /// List backups stored in S3
@@ -148,6 +156,7 @@ async fn main() -> Result<()> {
             mode,
             replication,
             raw,
+            parallel,
         } => {
             // --replication flag overrides --mode for backward compatibility
             let effective_mode = if replication {
@@ -166,11 +175,11 @@ async fn main() -> Result<()> {
 
             match effective_mode {
                 BackupMode::Individual => {
-                    cmd_send_individual(&dataset, &s3cfg, &age_recipient, &full_interval, raw).await
+                    cmd_send_individual(&dataset, &s3cfg, &age_recipient, &full_interval, raw, parallel).await
                 }
                 _ => {
                     let repl = effective_mode == BackupMode::Replication;
-                    send_one_dataset(&dataset, &s3cfg, &age_recipient, &full_interval, repl, raw).await
+                    send_one_dataset(&dataset, &s3cfg, &age_recipient, &full_interval, repl, raw, None).await
                 }
             }
         }
@@ -241,6 +250,20 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Progress context for routing output through indicatif.
+struct ProgressCtx {
+    multi: MultiProgress,
+    bar: ProgressBar,
+}
+
+/// Print a message to stderr, routing through MultiProgress if available.
+fn log(progress: Option<&ProgressCtx>, msg: &str) {
+    match progress {
+        Some(ctx) => { let _ = ctx.multi.println(msg); }
+        None => eprintln!("{}", msg),
+    }
+}
+
 /// Send a single dataset to S3 (used by both single and replication modes,
 /// and called in a loop by individual mode).
 async fn send_one_dataset(
@@ -250,11 +273,12 @@ async fn send_one_dataset(
     full_interval: &str,
     replication: bool,
     raw: bool,
+    progress: Option<&ProgressCtx>,
 ) -> Result<()> {
     let interval = humantime::parse_duration(full_interval)
         .context("invalid --full-interval format (try e.g. '7d' or '24h')")?;
 
-    eprintln!("listing local snapshots for {}...", dataset);
+    log(progress, &format!("listing local snapshots for {}...", dataset));
     let all_snaps = zfs::list_snapshots(dataset).await?;
 
     // Always plan against the exact dataset's snapshots — child dataset
@@ -268,24 +292,27 @@ async fn send_one_dataset(
     if local_snaps.is_empty() {
         bail!("no snapshots found for dataset {}", dataset);
     }
-    eprintln!("  found {} snapshots", local_snaps.len());
+    log(progress, &format!("  found {} snapshots", local_snaps.len()));
 
     let bucket = s3::create_bucket(s3cfg)?;
     let ds_prefix = s3::dataset_prefix(&s3cfg.prefix, dataset);
-    eprintln!("listing S3 objects under {}...", ds_prefix);
+    log(progress, &format!("listing S3 objects under {}...", ds_prefix));
     let objects = s3::list_objects(&bucket, &ds_prefix).await?;
     let entries = plan::parse_all_entries(&objects, &s3cfg.prefix, dataset);
-    eprintln!("  found {} backup entries", entries.len());
+    log(progress, &format!("  found {} backup entries", entries.len()));
 
-    let send_plan = plan::decide_send(&entries, &local_snaps, interval, Utc::now())?;
+    let (send_plan, warnings) = plan::decide_send(&entries, &local_snaps, interval, Utc::now())?;
+    for w in &warnings {
+        log(progress, w);
+    }
 
     match &send_plan {
         SendPlan::NothingToDo => {
-            eprintln!("nothing to do — latest snapshot already backed up");
+            log(progress, "nothing to do — latest snapshot already backed up");
             return Ok(());
         }
         SendPlan::Full { snapshot } => {
-            eprintln!("plan: full send of {}@{}", dataset, snapshot);
+            log(progress, &format!("plan: full send of {}@{}", dataset, snapshot));
             let key = format!("{}/full/{}.zfs.age", ds_prefix, snapshot);
 
             let mut child = zfs::spawn_zfs_send_full(dataset, snapshot, replication, raw)?;
@@ -295,8 +322,17 @@ async fn send_one_dataset(
 
             let encrypted = crypto::encrypt_stream(reader, age_recipient)?;
 
-            eprintln!("uploading to s3://{}...", key);
-            s3::multipart_upload(&bucket, &key, encrypted).await?;
+            log(progress, &format!("uploading to s3://{}...", key));
+            match progress {
+                Some(ctx) => {
+                    ctx.bar.set_length(0);
+                    ctx.bar.set_position(0);
+                    s3::multipart_upload_with_progress(&bucket, &key, encrypted, &ctx.bar).await?;
+                }
+                None => {
+                    s3::multipart_upload(&bucket, &key, encrypted).await?;
+                }
+            }
 
             let output = child.wait_with_output().await.context("failed to wait for zfs send")?;
             if !output.status.success() {
@@ -305,16 +341,16 @@ async fn send_one_dataset(
                 bail!("zfs send failed: {}", stderr.trim());
             }
 
-            eprintln!("done: full backup uploaded to {}", key);
+            log(progress, &format!("done: full backup uploaded to {}", key));
         }
         SendPlan::Incremental {
             base_snapshot,
             target_snapshot,
         } => {
-            eprintln!(
+            log(progress, &format!(
                 "plan: incremental send {}@{} -> {}@{}",
                 dataset, base_snapshot, dataset, target_snapshot
-            );
+            ));
             let key = format!(
                 "{}/incr/{}..{}.zfs.age",
                 ds_prefix, base_snapshot, target_snapshot
@@ -333,8 +369,17 @@ async fn send_one_dataset(
 
             let encrypted = crypto::encrypt_stream(reader, age_recipient)?;
 
-            eprintln!("uploading to s3://{}...", key);
-            s3::multipart_upload(&bucket, &key, encrypted).await?;
+            log(progress, &format!("uploading to s3://{}...", key));
+            match progress {
+                Some(ctx) => {
+                    ctx.bar.set_length(0);
+                    ctx.bar.set_position(0);
+                    s3::multipart_upload_with_progress(&bucket, &key, encrypted, &ctx.bar).await?;
+                }
+                None => {
+                    s3::multipart_upload(&bucket, &key, encrypted).await?;
+                }
+            }
 
             let output = child.wait_with_output().await.context("failed to wait for zfs send")?;
             if !output.status.success() {
@@ -343,7 +388,7 @@ async fn send_one_dataset(
                 bail!("zfs send failed: {}", stderr.trim());
             }
 
-            eprintln!("done: incremental backup uploaded to {}", key);
+            log(progress, &format!("done: incremental backup uploaded to {}", key));
         }
     }
 
@@ -357,39 +402,85 @@ async fn cmd_send_individual(
     age_recipient: &str,
     full_interval: &str,
     raw: bool,
+    parallel: usize,
 ) -> Result<()> {
-    eprintln!("individual mode: enumerating datasets under {}...", dataset);
+    let multi = MultiProgress::new();
+
+    let log_msg = |msg: &str| { let _ = multi.println(msg); };
+
+    log_msg(&format!("individual mode: enumerating datasets under {}...", dataset));
     let descendants = zfs::list_descendants(dataset).await?;
 
     let mut all_datasets = vec![dataset.to_string()];
     all_datasets.extend(descendants);
-    eprintln!(
-        "  found {} datasets to back up",
-        all_datasets.len()
-    );
+    let total = all_datasets.len();
+    log_msg(&format!("  found {} datasets to back up (parallel: {})", total, parallel));
 
-    let mut errors: Vec<(String, anyhow::Error)> = Vec::new();
+    let overall_style = ProgressStyle::with_template(
+        "{spinner:.green} [{pos}/{len}] datasets complete"
+    ).unwrap().tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ");
+    let overall = multi.add(ProgressBar::new(total as u64));
+    overall.set_style(overall_style);
+    overall.enable_steady_tick(std::time::Duration::from_millis(100));
 
-    for ds in &all_datasets {
-        eprintln!("\n--- backing up {} ---", ds);
-        if let Err(e) = send_one_dataset(ds, s3cfg, age_recipient, full_interval, false, raw).await {
-            eprintln!("ERROR backing up {}: {:#}", ds, e);
-            errors.push((ds.clone(), e));
+    let bar_style = ProgressStyle::with_template(
+        "{prefix:.bold.dim} {bytes} uploaded {bytes_per_sec}"
+    ).unwrap();
+
+    let errors: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let stream = futures::stream::iter(all_datasets.into_iter().map(|ds| {
+        let s3cfg = s3cfg.clone();
+        let age_recipient = age_recipient.to_string();
+        let full_interval = full_interval.to_string();
+        let multi = multi.clone();
+        let overall = overall.clone();
+        let errors = errors.clone();
+        let bar_style = bar_style.clone();
+
+        async move {
+            let pb = multi.insert_before(&overall, ProgressBar::new(0));
+            pb.set_style(bar_style);
+            let short_name = ds.rsplit('/').next().unwrap_or(&ds).to_string();
+            pb.set_prefix(short_name);
+
+            let ctx = ProgressCtx {
+                multi: multi.clone(),
+                bar: pb.clone(),
+            };
+
+            let result = send_one_dataset(
+                &ds, &s3cfg, &age_recipient, &full_interval, false, raw, Some(&ctx),
+            ).await;
+
+            if let Err(e) = result {
+                let _ = multi.println(format!("ERROR backing up {}: {:#}", ds, e));
+                errors.lock().unwrap().push((ds.clone(), format!("{:#}", e)));
+            }
+
+            pb.finish_and_clear();
+            multi.remove(&pb);
+            overall.inc(1);
         }
-    }
+    }));
 
+    stream.buffer_unordered(parallel).collect::<Vec<()>>().await;
+
+    overall.finish_and_clear();
+
+    let errors = Arc::try_unwrap(errors).unwrap().into_inner().unwrap();
     if errors.is_empty() {
-        eprintln!("\nall {} datasets backed up successfully", all_datasets.len());
+        let _ = multi.println(format!("all {} datasets backed up successfully", total));
         Ok(())
     } else {
-        eprintln!("\n{}/{} datasets failed:", errors.len(), all_datasets.len());
+        let _ = multi.println(format!("{}/{} datasets failed:", errors.len(), total));
         for (ds, e) in &errors {
-            eprintln!("  {}: {:#}", ds, e);
+            let _ = multi.println(format!("  {}: {}", ds, e));
         }
         bail!(
             "{} of {} datasets failed to back up",
             errors.len(),
-            all_datasets.len()
+            total
         );
     }
 }

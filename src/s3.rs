@@ -7,6 +7,7 @@ use s3::serde_types::Object;
 const PART_SIZE: usize = 8 * 1024 * 1024; // 8 MB
 
 /// Configuration for S3 connection.
+#[derive(Clone)]
 pub struct S3Config {
     pub bucket: String,
     pub endpoint: String,
@@ -99,6 +100,75 @@ pub async fn multipart_upload(
         match part {
             Ok(part) => {
                 eprintln!("  uploaded part {} ({:.1} MB)", part_number, filled as f64 / 1_048_576.0);
+                parts.push(part);
+            }
+            Err(e) => {
+                let _ = bucket.abort_upload(key, upload_id).await;
+                bail!("failed to upload part {}: {}", part_number, e);
+            }
+        }
+
+        part_number += 1;
+    }
+
+    if parts.is_empty() {
+        let _ = bucket.abort_upload(key, upload_id).await;
+        bail!("zfs send produced no data");
+    }
+
+    bucket
+        .complete_multipart_upload(key, upload_id, parts)
+        .await
+        .context("failed to complete multipart upload")?;
+
+    Ok(())
+}
+
+/// Upload data from a reader using S3 multipart upload, updating a progress bar.
+pub async fn multipart_upload_with_progress(
+    bucket: &Bucket,
+    key: &str,
+    mut reader: impl std::io::Read,
+    pb: &indicatif::ProgressBar,
+) -> Result<()> {
+    let init = bucket
+        .initiate_multipart_upload(key, "application/octet-stream")
+        .await
+        .context("failed to initiate multipart upload")?;
+
+    let upload_id = &init.upload_id;
+    let mut parts = Vec::new();
+    let mut part_number: u32 = 1;
+
+    loop {
+        let mut buf = vec![0u8; PART_SIZE];
+        let mut filled = 0;
+
+        while filled < PART_SIZE {
+            match reader.read(&mut buf[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => {
+                    let _ = bucket.abort_upload(key, upload_id).await;
+                    return Err(e).context("failed to read from zfs send stream");
+                }
+            }
+        }
+
+        if filled == 0 {
+            break;
+        }
+
+        buf.truncate(filled);
+
+        let part = bucket
+            .put_multipart_chunk(buf, key, part_number, upload_id, "application/octet-stream")
+            .await;
+
+        match part {
+            Ok(part) => {
+                pb.inc(filled as u64);
                 parts.push(part);
             }
             Err(e) => {

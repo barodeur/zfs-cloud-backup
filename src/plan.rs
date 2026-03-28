@@ -63,7 +63,7 @@ pub fn decide_send(
     local_snapshots: &[SnapshotInfo],
     full_interval: std::time::Duration,
     now: DateTime<Utc>,
-) -> Result<SendPlan> {
+) -> Result<(SendPlan, Vec<String>)> {
     if local_snapshots.is_empty() {
         bail!("no local snapshots found for dataset");
     }
@@ -87,10 +87,12 @@ pub fn decide_send(
         }
     };
 
+    let mut warnings = Vec::new();
+
     if needs_full {
-        return Ok(SendPlan::Full {
+        return Ok((SendPlan::Full {
             snapshot: latest_local.snap_name.clone(),
-        });
+        }, warnings));
     }
 
     // Find the most recently sent snapshot (full or incremental)
@@ -102,33 +104,33 @@ pub fn decide_send(
     let last_sent = match last_sent {
         Some(s) => s,
         None => {
-            return Ok(SendPlan::Full {
+            return Ok((SendPlan::Full {
                 snapshot: latest_local.snap_name.clone(),
-            })
+            }, warnings))
         }
     };
 
     // Check if the last sent snapshot still exists locally
     let base_exists = local_snapshots.iter().any(|s| s.snap_name == *last_sent);
     if !base_exists {
-        eprintln!(
+        warnings.push(format!(
             "warning: last sent snapshot {} no longer exists locally, forcing full send",
             last_sent
-        );
-        return Ok(SendPlan::Full {
+        ));
+        return Ok((SendPlan::Full {
             snapshot: latest_local.snap_name.clone(),
-        });
+        }, warnings));
     }
 
     // If last sent is already the latest, nothing to do
     if *last_sent == latest_local.snap_name {
-        return Ok(SendPlan::NothingToDo);
+        return Ok((SendPlan::NothingToDo, warnings));
     }
 
-    Ok(SendPlan::Incremental {
+    Ok((SendPlan::Incremental {
         base_snapshot: last_sent.clone(),
         target_snapshot: latest_local.snap_name.clone(),
-    })
+    }, warnings))
 }
 
 /// Build a restore chain for a specific target snapshot.
@@ -332,7 +334,7 @@ mod tests {
     fn test_decide_send_no_backups() {
         let entries = vec![];
         let snaps = vec![make_snap("snap1", 1000)];
-        let plan =
+        let (plan, _warnings) =
             decide_send(&entries, &snaps, std::time::Duration::from_secs(86400 * 7), Utc::now())
                 .unwrap();
         assert_eq!(
@@ -348,7 +350,7 @@ mod tests {
         let entries = vec![make_full("snap1", "2026-02-05T00:00:00Z")];
         let snaps = vec![make_snap("snap1", 1000)];
         let now = Utc.with_ymd_and_hms(2026, 2, 5, 1, 0, 0).unwrap();
-        let plan =
+        let (plan, _warnings) =
             decide_send(&entries, &snaps, std::time::Duration::from_secs(86400 * 7), now).unwrap();
         assert_eq!(plan, SendPlan::NothingToDo);
     }
@@ -358,7 +360,7 @@ mod tests {
         let entries = vec![make_full("snap1", "2026-02-05T00:00:00Z")];
         let snaps = vec![make_snap("snap1", 1000), make_snap("snap2", 2000)];
         let now = Utc.with_ymd_and_hms(2026, 2, 5, 1, 0, 0).unwrap();
-        let plan =
+        let (plan, _warnings) =
             decide_send(&entries, &snaps, std::time::Duration::from_secs(86400 * 7), now).unwrap();
         assert_eq!(
             plan,
@@ -374,7 +376,7 @@ mod tests {
         let entries = vec![make_full("snap1", "2026-01-01T00:00:00Z")];
         let snaps = vec![make_snap("snap1", 1000), make_snap("snap2", 2000)];
         let now = Utc.with_ymd_and_hms(2026, 2, 5, 0, 0, 0).unwrap();
-        let plan =
+        let (plan, _warnings) =
             decide_send(&entries, &snaps, std::time::Duration::from_secs(86400 * 7), now).unwrap();
         assert_eq!(
             plan,
