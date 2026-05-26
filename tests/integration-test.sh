@@ -434,10 +434,44 @@ FULL_COUNT=$(echo "$LIST_OUT" | grep -c "^full" || true)
 assert_count "individual prune: 3 fulls remain (1 per dataset)" 3 "$FULL_COUNT"
 
 # =============================================================================
-# Test 7: Encrypted dataset with --raw (zvol children)
+# Test 7: Individual mode with --exclude
 # =============================================================================
 echo ""
-echo -e "${BOLD}=== Test 7: Encrypted dataset with --raw (zvol children) ===${RESET}"
+echo -e "${BOLD}=== Test 7: Individual mode with --exclude ===${RESET}"
+
+zfs create testpool/excl
+zfs create testpool/excl/keep1
+zfs create testpool/excl/skip-me
+zfs create testpool/excl/keep2
+echo "keep1" > /testpool/excl/keep1/data.txt
+echo "skip" > /testpool/excl/skip-me/data.txt
+echo "keep2" > /testpool/excl/keep2/data.txt
+zfs snapshot -r testpool/excl@snap1
+
+$ZCB send \
+  --dataset testpool/excl \
+  --age-recipient "$AGE_RECIPIENT" \
+  --mode individual \
+  --exclude skip-me
+
+LIST_OUT=$($ZCB list --dataset testpool/excl)
+assert_contains "exclude: parent backed up" "$LIST_OUT" "testpool/excl"
+assert_contains "exclude: keep1 backed up" "$LIST_OUT" "testpool/excl/keep1"
+assert_contains "exclude: keep2 backed up" "$LIST_OUT" "testpool/excl/keep2"
+FULL_COUNT=$(echo "$LIST_OUT" | grep -c "^full" || true)
+assert_count "exclude: 3 fulls (skipped excluded)" 3 "$FULL_COUNT"
+
+# Verify skip-me has no backups
+SKIP_LINES=$(echo "$LIST_OUT" | grep "skip-me" || true)
+assert_eq "exclude: skip-me not in backups" "" "$SKIP_LINES"
+
+echo -e "${GREEN}PASS${RESET}: --exclude correctly skips matching datasets"
+
+# =============================================================================
+# Test 8: Encrypted dataset with --raw (zvol children)
+# =============================================================================
+echo ""
+echo -e "${BOLD}=== Test 8: Encrypted dataset with --raw (zvol children) ===${RESET}"
 
 # Create an encrypted parent dataset with two zvol children
 echo "testpassword" | zfs create \
