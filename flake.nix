@@ -12,7 +12,7 @@
         pname = "zfs-cloud-backup";
         version = "0.1.0";
         src = ./.;
-        cargoHash = "sha256-yxMVBq578CaFwdW61BMhBCTYaceXuMJ8zlwCZgXmBmw=";
+        cargoHash = "sha256-JqC6F7gCOC4amLTr9li65HasBbWzo9g1sWam3WZbOO0=";
         nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = [ pkgs.pkgsStatic.openssl ];
       };
