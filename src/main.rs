@@ -57,6 +57,10 @@ enum Commands {
         /// Raw mode: send encrypted datasets without decrypting (-w)
         #[arg(long, env = "ZCB_RAW")]
         raw: bool,
+
+        /// Exclude datasets containing these substrings (can be repeated; comma-separated via env)
+        #[arg(long, env = "ZCB_EXCLUDE", value_delimiter = ',')]
+        exclude: Vec<String>,
     },
 
     /// List backups stored in S3
@@ -148,6 +152,7 @@ async fn main() -> Result<()> {
             mode,
             replication,
             raw,
+            exclude,
         } => {
             // --replication flag overrides --mode for backward compatibility
             let effective_mode = if replication {
@@ -166,7 +171,7 @@ async fn main() -> Result<()> {
 
             match effective_mode {
                 BackupMode::Individual => {
-                    cmd_send_individual(&dataset, &s3cfg, &age_recipient, &full_interval, raw).await
+                    cmd_send_individual(&dataset, &s3cfg, &age_recipient, &full_interval, raw, &exclude).await
                 }
                 _ => {
                     let repl = effective_mode == BackupMode::Replication;
@@ -357,12 +362,23 @@ async fn cmd_send_individual(
     age_recipient: &str,
     full_interval: &str,
     raw: bool,
+    exclude: &[String],
 ) -> Result<()> {
     eprintln!("individual mode: enumerating datasets under {}...", dataset);
     let descendants = zfs::list_descendants(dataset).await?;
 
     let mut all_datasets = vec![dataset.to_string()];
     all_datasets.extend(descendants);
+
+    if !exclude.is_empty() {
+        let before = all_datasets.len();
+        all_datasets.retain(|ds| !exclude.iter().any(|pat| ds.contains(pat)));
+        let skipped = before - all_datasets.len();
+        if skipped > 0 {
+            eprintln!("  excluded {} datasets matching {:?}", skipped, exclude);
+        }
+    }
+
     eprintln!(
         "  found {} datasets to back up",
         all_datasets.len()
