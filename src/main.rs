@@ -58,8 +58,8 @@ enum Commands {
         #[arg(long, env = "ZCB_RAW")]
         raw: bool,
 
-        /// Exclude datasets matching these suffixes (can be repeated)
-        #[arg(long, env = "ZCB_EXCLUDE")]
+        /// Exclude datasets containing these substrings (can be repeated; comma-separated via env)
+        #[arg(long, env = "ZCB_EXCLUDE", value_delimiter = ',')]
         exclude: Vec<String>,
     },
 
