@@ -10,7 +10,7 @@
 
       buildZcb = pkgs: pkgs.pkgsStatic.rustPlatform.buildRustPackage {
         pname = "zfs-cloud-backup";
-        version = "0.1.3";
+        version = "0.1.4";
         src = ./.;
         cargoHash = "sha256-JqC6F7gCOC4amLTr9li65HasBbWzo9g1sWam3WZbOO0=";
         nativeBuildInputs = [ pkgs.pkg-config ];
